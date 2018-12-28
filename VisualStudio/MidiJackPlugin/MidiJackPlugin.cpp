@@ -3,57 +3,65 @@
 namespace
 {
     // Basic type aliases
-    using DeviceHandle = HMIDIIN;
-    using DeviceHandleSend = HMIDIOUT;
+    using InputHandle = HMIDIIN;
+    using OutputHandle = HMIDIOUT;
     using DeviceID = uint32_t;
 
     // Utility functions for Win32/64 compatibility
 #ifdef _WIN64
-    DeviceID DeviceHandleToID(DeviceHandle handle)
+    DeviceID InputHandleToID(InputHandle handle)
     {
         return static_cast<DeviceID>(reinterpret_cast<uint64_t>(handle));
     }
-    DeviceID DeviceHandleToID(DeviceHandleSend handle)
+    InputHandle DeviceIDToInputHandle(DeviceID id)
+    {
+        return reinterpret_cast<InputHandle>(static_cast<uint64_t>(id));
+    }
+    DeviceID OutputHandleToID(OutputHandle handle)
     {
         return static_cast<DeviceID>(reinterpret_cast<uint64_t>(handle));
     }
-    DeviceHandle DeviceIDToHandle(DeviceID id)
+    OutputHandle DeviceIDToOutputHandle(DeviceID id)
     {
-        return reinterpret_cast<DeviceHandle>(static_cast<uint64_t>(id));
-    }
-    DeviceHandleSend DeviceIDToHandleSend(DeviceID id)
-    {
-        return reinterpret_cast<DeviceHandleSend>(static_cast<uint64_t>(id));
+        return reinterpret_cast<OutputHandle>(static_cast<uint64_t>(id));
     }
 #else
-    DeviceID DeviceHandleToID(DeviceHandle handle)
+    DeviceID InputHandleToID(InputHandle handle)
     {
         return reinterpret_cast<DeviceID>(handle);
     }
-    DeviceHandle DeviceIDToHandle(DeviceID id)
+    InputHandle DeviceIDToInputHandle(DeviceID id)
     {
-        return reinterpret_cast<DeviceHandle>(id);
+        return reinterpret_cast<InputHandle>(id);
+    }
+    DeviceID OutputHandleToID(OutputHandle handle)
+    {
+        return reinterpret_cast<DeviceID>(handle);
+    }
+    OutputHandle DeviceIDToOutputHandle(DeviceID id)
+    {
+        return reinterpret_cast<OutputHandle>(id);
     }
 #endif
 
     // MIDI message storage class
     class MidiMessage
     {
-        DeviceID source_;
+        DeviceID endpoint_;
         uint8_t status_;
         uint8_t data1_;
         uint8_t data2_;
 
     public:
 
-        MidiMessage(DeviceID source, uint32_t rawData)
-            : source_(source), status_(rawData), data1_(rawData >> 8), data2_(rawData >> 16)
+        MidiMessage(DeviceID endpoint, uint32_t rawData)
+            : endpoint_(endpoint), status_(rawData), data1_(rawData >> 8), data2_(rawData >> 16)
         {
         }
 
         uint64_t Encode64Bit()
         {
-            uint64_t ul = source_;
+            uint64_t ul = endpoint_;
             ul |= (uint64_t)status_ << 32;
             ul |= (uint64_t)data1_ << 40;
             ul |= (uint64_t)data2_ << 48;
@@ -63,48 +71,29 @@ namespace
         std::string ToString()
         {
             char temp[256];
-            std::snprintf(temp, sizeof(temp), "(%X) %02X %02X %02X", source_, status_, data1_, data2_);
+            std::snprintf(temp, sizeof(temp), "(%X) %02X %02X %02X", endpoint_, status_, data1_, data2_);
             return temp;
-        }
-    };
-
-    class MidiMessageSend
-    {
-    public:
-        DeviceID dist;
-        DWORD message;
-
-    public:
-        MidiMessageSend(DeviceID distination, DWORD message) {
-            this->dist = distination;
-            this->message = message;
         }
     };
 
     // Incoming MIDI message queue
     std::queue<MidiMessage> message_queue;
 
-    // MIDI OUT message queue
-    std::queue<MidiMessageSend> message_queue_send;
-
     // Device handler lists
-    std::list<DeviceHandle> active_handles;
-    std::stack<DeviceHandle> handles_to_close;
-
-    std::list<DeviceHandleSend> active_handles_send;
-    std::stack<DeviceHandleSend> handles_to_close_send;
-
+    std::list<InputHandle> active_handles_in;
+    std::list<OutputHandle> active_handles_out;
+    std::stack<InputHandle> handles_to_close_in;
+    std::stack<OutputHandle> handles_to_close_out;
 
     // Mutex for resources
     std::recursive_mutex resource_lock;
-    std::recursive_mutex resource_lock_send;
 
     // MIDI input callback
-    static void CALLBACK MidiInProc(HMIDIIN hMidiIn, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2)
+    static void CALLBACK MidiInProc(InputHandle hMidiIn, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2)
     {
         if (wMsg == MIM_DATA)
         {
-            DeviceID id = DeviceHandleToID(hMidiIn);
+            DeviceID id = InputHandleToID(hMidiIn);
             uint32_t raw = static_cast<uint32_t>(dwParam1);
             resource_lock.lock();
             message_queue.push(MidiMessage(id, raw));
@@ -113,28 +102,24 @@ namespace
         else if (wMsg == MIM_CLOSE)
         {
             resource_lock.lock();
-            handles_to_close.push(hMidiIn);
+            handles_to_close_in.push(hMidiIn);
+            resource_lock.unlock();
+        }
+    }
+    
+    // MIDI output callback
+    static void CALLBACK MidiOutProc(OutputHandle hMidiOut, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2)
+    {
+        if (wMsg == MIM_CLOSE)
+        {
+            resource_lock.lock();
+            handles_to_close_out.push(hMidiOut);
             resource_lock.unlock();
         }
     }
 
-    // MIDI out callback
-    static void MidiOutProc(HMIDIOUT hmo, UINT32 wMsg, DWORD dwInstance, DWORD_PTR dwParam1, DWORD dwParam2)
-    {
-        if (wMsg == MOM_OPEN) {
-        }
-        else if (wMsg == MOM_CLOSE) {
-            resource_lock_send.lock();
-            handles_to_close_send.push(hmo);
-            resource_lock_send.unlock();
-        }
-        else if (wMsg == MOM_DONE) {
-        }
-        
-    }
-
-    // Retrieve a name of a given device.
-    std::string GetDeviceName(DeviceHandle handle)
+    // Retrieve a name of a given source.
+    std::string GetSourceName(InputHandle handle)
     {
         auto casted_id = reinterpret_cast<UINT_PTR>(handle);
         MIDIINCAPS caps;
@@ -144,8 +129,9 @@ namespace
         }
         return "unknown";
     }
-
-    std::string GetDeviceName(DeviceHandleSend handle)
+    
+    // Retrieve a name of a given destination.
+    std::string GetDestinationName(OutputHandle handle)
     {
         auto casted_id = reinterpret_cast<UINT_PTR>(handle);
         MIDIOUTCAPS caps;
@@ -156,17 +142,17 @@ namespace
         return "unknown";
     }
 
-    // Open a MIDI IN device with a given index.
-    void OpenMidiInDevice(unsigned int index)
+    // Open a MIDI source with a given index.
+    void OpenSource(unsigned int index)
     {
         static const DWORD_PTR callback = reinterpret_cast<DWORD_PTR>(MidiInProc);
-        DeviceHandle handle;
+        InputHandle handle;
         if (midiInOpen(&handle, index, callback, NULL, CALLBACK_FUNCTION) == MMSYSERR_NOERROR)
         {
             if (midiInStart(handle) == MMSYSERR_NOERROR)
             {
                 resource_lock.lock();
-                active_handles.push_back(handle);
+                active_handles_in.push_back(handle);
                 resource_lock.unlock();
             }
             else
@@ -175,53 +161,48 @@ namespace
             }
         }
     }
-
-    // Open a MIDI OUT device with a given index.
-    void OpenMidiOutDevice(unsigned int index) {
-        DeviceHandleSend handle;
+    
+    // Open a MIDI destination with a given index.
+    void OpenDestination(unsigned int index)
+    {
         static const DWORD_PTR callback = reinterpret_cast<DWORD_PTR>(MidiOutProc);
-
+        OutputHandle handle;
         if (midiOutOpen(&handle, index, callback, NULL, CALLBACK_FUNCTION) == MMSYSERR_NOERROR)
-        //if (midiOutOpen(&handle, index, NULL, NULL, CALLBACK_NULL) == MMSYSERR_NOERROR)
         {
-            resource_lock_send.lock();
-            active_handles_send.push_back(handle);
-            resource_lock_send.unlock();
+            resource_lock.lock();
+            active_handles_out.push_back(handle);
+            resource_lock.unlock();
         }
-        else {
-            midiOutClose(handle);
-        }
-
     }
 
-    // Close a given MidiIn handler.
-    void CloseMidiInDevice(DeviceHandle handle)
+    // Close a given source handler.
+    void CloseSource(InputHandle handle)
     {
         midiInClose(handle);
 
         resource_lock.lock();
-        active_handles.remove(handle);
+        active_handles_in.remove(handle);
         resource_lock.unlock();
     }
-
-    // Close a given MidiOut handler.
-    void CloseMidiOutDevice(DeviceHandleSend handle)
+    
+    // Close a given destination handler.
+    void CloseDestination(OutputHandle handle)
     {
         midiOutClose(handle);
-
-        resource_lock_send.lock();
-        active_handles_send.remove(handle);
-        resource_lock_send.unlock();
+        
+        resource_lock.lock();
+        active_handles_out.remove(handle);
+        resource_lock.unlock();
     }
 
     // Open the all devices.
     void OpenAllDevices()
     {
-        int device_count_recv = midiInGetNumDevs();
-        int device_count_send = midiOutGetNumDevs();
-
-        for (int i = 0; i < device_count_recv; i++) OpenMidiInDevice(i);
-        for (int i = 0; i < device_count_send; i++) OpenMidiOutDevice(i);
+        int source_count = midiInGetNumDevs();
+        for (int i = 0; i < source_count; i++) OpenSource(i);
+        
+        int destination_count = midiOutGetNumDevs();
+        for (int i = 0; i < destination_count; i++) OpenDestination(i);
     }
 
     // Refresh device handlers
@@ -229,14 +210,16 @@ namespace
     {
         resource_lock.lock();
 
-        // Close disconnected handlers.
-        while (!handles_to_close.empty()) {
-            CloseMidiInDevice(handles_to_close.top());
-            handles_to_close.pop();
+        // Close disconnected source handlers.
+        while (!handles_to_close_in.empty()) {
+            CloseSource(handles_to_close_in.top());
+            handles_to_close_in.pop();
         }
-        while (!handles_to_close_send.empty()) {
-            CloseMidiOutDevice(handles_to_close_send.top());
-            handles_to_close_send.pop();
+        
+        // Close disconnected destination handlers.
+        while (!handles_to_close_out.empty()) {
+            CloseDestination(handles_to_close_out.top());
+            handles_to_close_out.pop();
         }
 
         // Try open all devices to detect newly connected ones.
@@ -249,14 +232,20 @@ namespace
     void CloseAllDevices()
     {
         resource_lock.lock();
-        while (!active_handles.empty())
-            CloseMidiInDevice(active_handles.front());
+        while (!active_handles_in.empty())
+            CloseSource(active_handles_in.front());
+        
+        while (!active_handles_out.empty())
+            CloseDestination(active_handles_out.front());
         resource_lock.unlock();
-
-        resource_lock_send.lock();
-        while (!active_handles_send.empty())
-            CloseMidiOutDevice(active_handles_send.front());
-        resource_lock_send.unlock();
+    }
+    
+    // Send a MIDI message
+    void SendMessage(uint64_t msg)
+    {
+        OutputHandle handle = DeviceIDToOutputHandle((DeviceID)msg);
+        DWORD packet = (msg >> 32);
+        midiOutShortMsg(handle, packet);
     }
 }
 
@@ -264,51 +253,49 @@ namespace
 
 #define EXPORT_API extern "C" __declspec(dllexport)
 
-// Counts the number of MIDI IN endpoints.
-EXPORT_API int MidiJackCountEndpoints()
+// Counts the number of sources.
+EXPORT_API int MidiJackCountSources()
 {
-    return static_cast<int>(active_handles.size());
+    return static_cast<int>(active_handles_in.size());
 }
 
-// Counts the number of MIDI OUT endpoints.
-EXPORT_API int MidiJackCountSendEndpoints()
+// Counts the number of destinations.
+EXPORT_API int MidiJackCountDestinations()
 {
-    return static_cast<int>(active_handles_send.size());
+    return static_cast<int>(active_handles_out.size());
 }
 
-// Get the unique ID of an MIDI IN endpoint.
-EXPORT_API uint32_t MidiJackGetEndpointIDAtIndex(int index)
+// Get the unique ID of a source.
+EXPORT_API uint32_t MidiJackGetSourceIDAtIndex(int index)
 {
-    auto itr = active_handles.begin();
+    auto itr = active_handles_in.begin();
     std::advance(itr, index);
-    return DeviceHandleToID(*itr);
+    return InputHandleToID(*itr);
 }
 
-// Get the unique ID of an MIDI OUT endpoint.
-EXPORT_API uint32_t MidiJackGetSendEndpointIDAtIndex(int index)
+// Get the unique ID of a destination.
+EXPORT_API uint32_t MidiJackGetDestinationIDAtIndex(int index)
 {
-    auto itr = active_handles_send.begin();
+    auto itr = active_handles_out.begin();
     std::advance(itr, index);
-    return DeviceHandleToID(*itr);
+    return OutputHandleToID(*itr);
 }
 
-
-// Get the name of an MIDI IN endpoint.
-EXPORT_API const char* MidiJackGetEndpointName(uint32_t id)
+// Get the name of a source.
+EXPORT_API const char* MidiJackGetSourceName(uint32_t id)
 {
-    auto handle = DeviceIDToHandle(id);
+    auto handle = DeviceIDToInputHandle(id);
     static std::string buffer;
-    buffer = GetDeviceName(handle);
+    buffer = GetSourceName(handle);
     return buffer.c_str();
 }
 
-
-// Get the name of an MIDI OUT endpoint.
-EXPORT_API const char* MidiJackGetSendEndpointName(uint32_t id)
+// Get the name of a destination.
+EXPORT_API const char* MidiJackGetDestinationName(uint32_t id)
 {
-    auto handle = DeviceIDToHandleSend(id);
+    auto handle = DeviceIDToOutputHandle(id);
     static std::string buffer;
-    buffer = GetDeviceName(handle);
+    buffer = GetDestinationName(handle);
     return buffer.c_str();
 }
 
@@ -327,44 +314,8 @@ EXPORT_API uint64_t MidiJackDequeueIncomingData()
     return msg.Encode64Bit();
 }
 
-// Enqueue MIDI OUT message to send
-// data = 3 bytes midi note/cc message
-EXPORT_API uint32_t MidiJackSendData(DeviceID dist, uint32_t data)
+// Send a MIDI message
+EXPORT_API void MidiJackSendMessage(uint64_t msg)
 {
-    RefreshDevices();
-
-    // formatting data bytes for midiOutShortMsg
-    DWORD msg;
-    msg	 = ((DWORD)data & 0x00FF0000) >> 16;
-    msg |= ((DWORD)data & 0x0000FF00);
-    msg |= ((DWORD)data & 0x000000FF) << 16;
-
-    resource_lock_send.lock();
-    message_queue_send.push(MidiMessageSend(dist, msg));
-    resource_lock_send.unlock();
-
-    return 0;
-}
-
-// Dequeue and send queued data
-EXPORT_API void MidiJackDequeueSendData() {
-    if (message_queue_send.empty()) return;
-
-    resource_lock_send.lock();
-    MidiMessageSend msgsend = message_queue_send.front();
-    message_queue_send.pop();
-    resource_lock_send.unlock();
-
-
-    for_each(active_handles_send.begin(), active_handles_send.end(), [&](DeviceHandleSend dh) {
-        if (DeviceIDToHandleSend(msgsend.dist) == dh) {
-            midiOutShortMsg(dh, msgsend.message);
-        }
-    });
-}
-
-// MIDI SysEx OUT
-EXPORT_API void MidiJackSendSysExData()
-{
-
+    SendMessage(msg);
 }

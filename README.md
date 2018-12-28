@@ -1,19 +1,7 @@
 MIDI Jack
 =========
 
-> MIDI OUT feature (only for Windows x64) is added at Nagitch/MIDIJack.
->
-> MIDI Monitor window supports shows MIDI OUT Devices, and you can use these additional API :
-> - MidiMaster.SendMessage(deviceID, message)
-> - MidiMaster.SendNoteOn(deviceID, channel, noteNumber, velocity)
-> - MidiMaster.SendNoteOff(deviceID, channel, noteNumber, velocity)
-> - MidiMaster.SendCC(deviceID, channel, ccNumber, value)
-> - MidiMaster.SendChannelMessage(deviceID, statusbyte, databyte)
-> - MidiMaster.SendChannelMessage(deviceID, statusbyte, channel, databyte)
->
-> and example scenes added to _Assets/ExampleSend_. you may can find out how to identify Device ID from example code, actually _SendTestMIDIManager.cs_.
-
-MIDI Jack is a MIDI input plugin for Unity.
+MIDI Jack is a MIDI plugin for Unity.
 
 ![sample](http://keijiro.github.io/MidiJack/sample.gif)
 
@@ -32,7 +20,7 @@ That’s it!
 See [the troubleshooting topics][troubleshooting] if you meet any problem.
 
 [unitypackage]:
-  https://github.com/keijiro/MidiJack/raw/unity5/MidiJack.unitypackage
+  https://github.com/teenageengineering/MidiJack/blob/master/MidiJack.unitypackage
 [troubleshooting]:
   https://github.com/keijiro/MidiJack/wiki/Troubleshooting
 
@@ -46,7 +34,7 @@ In that case, it returns the value in the All-Channel slot, which stores
 mixed status of all active channels.
 
 - MidiMaster.GetKey (channel, noteNumber)
-
+  
   Returns the velocity value while the key is pressed, or zero while the
   key is released. The value ranges from 0.0 (note-off) to 1.0 (maximum
   velocity).
@@ -73,6 +61,13 @@ There are also delegates for the each type of MIDI event.
 - MidiMaster.noteOffDelegate (channel, noteNumber)
 - MidiMaster.knobDelegate (channel, knobNumber, konbValue)
 
+Use the following functions to send MIDI out.
+
+- MidiMaster.SendKeyDown(MidiChannel channel, int noteNumber, int velocity)
+- MidiMaster.SendKeyUp(MidiChannel channel, int noteNumber)
+- MidiMaster.SendKnob(MidiChannel channel, int knobNumber, float value)
+- MidiMaster.SendRealtime(MidiJack.MidiRealtime code)
+
 MIDI Monitor Window
 -------------------
 
@@ -83,11 +78,20 @@ active devices and incoming MIDI messages.
 
 The MIDI Monitor window is avilable from the menu Window -> MIDI Jack.
 
+Endpoint Selection
+-------------------
+
+MidiSource and MidiDestination provide the same functionality as MidiMaster, but for selected endpoints only.
+
+MidiSource also provides a delegate for realtime events.
+
+- MidiSource.realtimeDelegate (MidiRealtime realtimeMsg);
+
 Current Limitations
 -------------------
 
-- Currently MIDI Jack only supports Windows and OS X. No iOS support yet.
-- Only supports note and CC messages. No support for program changes nor
+- Currently MIDI Jack supports Windows, OS X, iOS and Android.
+- Only supports note, CC and realtime messages. No support for program changes nor
   SysEx.
 - The MIDI Jack plugin always tries to capture all available MIDI devices.
   On Windows this behavior may conflict with other MIDI applications.

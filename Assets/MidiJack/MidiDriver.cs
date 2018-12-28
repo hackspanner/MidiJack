@@ -31,154 +31,10 @@ namespace MidiJack
     {
         #region Internal Data
 
-        class ChannelState
-        {
-            // Note state array
-            // X<0    : Released on this frame
-            // X=0    : Off
-            // 0<X<=1 : On (X represents velocity)
-            // 1<X<=2 : Triggered on this frame
-            //          (X-1 represents velocity)
-            public float[] _noteArray;
-
-            // Knob number to knob value mapping
-            public Dictionary<int, float> _knobMap;
-
-            public ChannelState()
-            {
-                _noteArray = new float[128];
-                _knobMap = new Dictionary<int, float>();
-            }
-        }
-
-        // Channel state array
-        ChannelState[] _channelArray;
-
         // Last update frame number
         int _lastFrame;
 
-        #endregion
-
-        #region Accessor Methods
-
-        public float GetKey(MidiChannel channel, int noteNumber)
-        {
-            UpdateIfNeeded();
-            var v = _channelArray[(int)channel]._noteArray[noteNumber];
-            if (v > 1) return v - 1;
-            if (v > 0) return v;
-            return 0.0f;
-        }
-
-        public bool GetKeyDown(MidiChannel channel, int noteNumber)
-        {
-            UpdateIfNeeded();
-            return _channelArray[(int)channel]._noteArray[noteNumber] > 1;
-        }
-
-        public bool GetKeyUp(MidiChannel channel, int noteNumber)
-        {
-            UpdateIfNeeded();
-            return _channelArray[(int)channel]._noteArray[noteNumber] < 0;
-        }
-
-        public int[] GetKnobNumbers(MidiChannel channel)
-        {
-            UpdateIfNeeded();
-            var cs = _channelArray[(int)channel];
-            var numbers = new int[cs._knobMap.Count];
-            cs._knobMap.Keys.CopyTo(numbers, 0);
-            return numbers;
-        }
-
-        public float GetKnob(MidiChannel channel, int knobNumber, float defaultValue)
-        {
-            UpdateIfNeeded();
-            var cs = _channelArray[(int)channel];
-            if (cs._knobMap.ContainsKey(knobNumber)) return cs._knobMap[knobNumber];
-            return defaultValue;
-        }
-
-        // MIDI Out, Send
-        public void SendNoteOn(uint deviceID, MidiChannel channel, int noteNumber, float velocity)
-        {
-            uint message = 0x00900000; //0x0090637f
-            message |= ((uint)channel << 16)  & 0x000f0000;
-            message |= ((uint)noteNumber << 8) & 0x0000ff00;
-            message |= (uint)(velocity*127f) & 0x000000ff;
-            SendMessage(deviceID, message);
-        }
-
-        public void SendNoteOff(uint deviceID, MidiChannel channel, int noteNumber, float velocity)
-        {
-            uint message = 0x00800000; //0x0090637f
-            message |= ((uint)channel << 16)  & 0x000f0000;
-            message |= ((uint)noteNumber << 8) & 0x0000ff00;
-            message |= (uint)(velocity*127f) & 0x000000ff;
-            SendMessage(deviceID, message);
-        }
-
-        public void SendCC(uint deviceID, MidiChannel channel, int ccNumber, float value)
-        {
-            uint message = 0x00B00000;
-            message |= ((uint)channel << 16)  & 0x000f0000;
-            message |= ((uint)ccNumber << 8) & 0x0000ff00;
-            message |= (uint)(value*127f) & 0x000000ff;
-            SendMessage(deviceID, message);
-        }
-
-        // Send MIDI channel message (channel voice/mode message)
-        // databyte is 2byte hex data
-        public void SendChannelMessage(uint deviceID, uint statusbyte, uint databyte)
-        {
-            uint message = 0x00800000;
-            message |= statusbyte << 16 & 0x00ef0000;
-            message |= databyte & 0x0000ffff;
-            SendMessage(deviceID, message);
-        }
-
-        // overload: indicate channel number in argument
-        public void SendChannelMessage(uint deviceID, uint statusbyte, MidiChannel channel, uint databyte)
-        {
-            uint message = 0x00800000;
-            message |= statusbyte << 16 & 0x00e00000;
-            message |= ((uint)channel << 16)  & 0x000f0000;
-            message |= databyte & 0x0000ffff;
-            SendData(deviceID, message);
-        }
-
-        public void SendMessage(uint deviceID, uint message)
-        {
-            SendData(deviceID, message);
-
-            #if UNITY_EDITOR
-            // Record the message.
-            _totalMessageCountSend++;
-
-            ulong msg;
-            msg  = ((ulong)message & 0x00FF0000) >> 16;
-            msg |= ((ulong)message & 0x0000FF00);
-            msg |= ((ulong)message & 0x000000FF) << 16;
-            msg = msg << 32;
-            _messageHistorySend.Enqueue(new MidiMessage(msg));
-
-            // Truncate the history.
-            while (_messageHistorySend.Count > 8)
-                _messageHistorySend.Dequeue();
-            #endif
-        }
-
-        #endregion
-
-        #region Event Delegates
-
-        public delegate void NoteOnDelegate(MidiChannel channel, int note, float velocity);
-        public delegate void NoteOffDelegate(MidiChannel channel, int note);
-        public delegate void KnobDelegate(MidiChannel channel, int knobNumber, float knobValue);
-
-        public NoteOnDelegate noteOnDelegate { get; set; }
-        public NoteOffDelegate noteOffDelegate { get; set; }
-        public KnobDelegate knobDelegate { get; set; }
+        Dictionary<uint, MidiSource> _sourceMap;
 
         #endregion
 
@@ -210,28 +66,11 @@ namespace MidiJack
             }
         }
 
-        // Total message count Send
-        int _totalMessageCountSend;
-
-        public int TotalMessageCountSend {
-            get {
-                UpdateIfNeeded();
-                return _totalMessageCountSend;
-            }
-        }
-
         // Message history
         Queue<MidiMessage> _messageHistory;
 
         public Queue<MidiMessage> History {
             get { return _messageHistory; }
-        }
-
-        // Send Message history
-        Queue<MidiMessage> _messageHistorySend;
-
-        public Queue<MidiMessage> HistorySend {
-            get { return _messageHistorySend; }
         }
 
         #endif
@@ -242,13 +81,10 @@ namespace MidiJack
 
         MidiDriver()
         {
-            _channelArray = new ChannelState[17];
-            for (var i = 0; i < 17; i++)
-                _channelArray[i] = new ChannelState();
+            _sourceMap = new Dictionary<uint, MidiSource>();
 
             #if UNITY_EDITOR
             _messageHistory = new Queue<MidiMessage>();
-            _messageHistorySend = new Queue<MidiMessage>();
             #endif
         }
 
@@ -276,66 +112,26 @@ namespace MidiJack
 
         void Update()
         {
-            // Update the note state array.
-            foreach (var cs in _channelArray)
-            {
-                for (var i = 0; i < 128; i++)
-                {
-                    var x = cs._noteArray[i];
-                    if (x > 1)
-                        cs._noteArray[i] = x - 1; // Key down -> Hold.
-                    else if (x < 0)
-                        cs._noteArray[i] = 0; // Key up -> Off.
-                }
-            }
-
-            // Process the message queue.
             while (true)
             {
-                // dequeue MIDI OUT message
-                DequeueSendData();
-
-                // MIDI IN message pop from the queue.
+                // Pop from the queue.
                 var data = DequeueIncomingData();
                 if (data == 0) break;
 
-                // Parse the message.
+                // Relay the message.
                 var message = new MidiMessage(data);
 
-                // Split the first byte.
-                var statusCode = message.status >> 4;
-                var channelNumber = message.status & 0xf;
-
-                // Note on message?
-                if (statusCode == 9)
+                if (_sourceMap.ContainsKey(message.endpoint))
                 {
-                    var velocity = 1.0f / 127 * message.data2 + 1;
-                    _channelArray[channelNumber]._noteArray[message.data1] = velocity;
-                    _channelArray[(int)MidiChannel.All]._noteArray[message.data1] = velocity;
-                    if (noteOnDelegate != null)
-                        noteOnDelegate((MidiChannel)channelNumber, message.data1, velocity - 1);
+                    MidiSource source = _sourceMap[message.endpoint];
+                    source.msgQueue.Enqueue(message);
                 }
 
-                // Note off message?
-                if (statusCode == 8 || (statusCode == 9 && message.data2 == 0))
+                // Send to all?
+                if (_sourceMap.ContainsKey(uint.MaxValue))
                 {
-                    _channelArray[channelNumber]._noteArray[message.data1] = -1;
-                    _channelArray[(int)MidiChannel.All]._noteArray[message.data1] = -1;
-                    if (noteOffDelegate != null)
-                        noteOffDelegate((MidiChannel)channelNumber, message.data1);
-                }
-
-                // CC message?
-                if (statusCode == 0xb)
-                {
-                    // Normalize the value.
-                    var level = 1.0f / 127 * message.data2;
-                    // Update the channel if it already exists, or add a new channel.
-                    _channelArray[channelNumber]._knobMap[message.data1] = level;
-                    // Do again for All-ch.
-                    _channelArray[(int)MidiChannel.All]._knobMap[message.data1] = level;
-                    if (knobDelegate != null)
-                        knobDelegate((MidiChannel)channelNumber, message.data1, level);
+                    MidiSource source = _sourceMap[uint.MaxValue];
+                    source.msgQueue.Enqueue(message);
                 }
 
                 #if UNITY_EDITOR
@@ -356,14 +152,102 @@ namespace MidiJack
 
         #region Native Plugin Interface
 
-        [DllImport("MidiJackPlugin", EntryPoint="MidiJackDequeueIncomingData")]
+        #if UNITY_ANDROID
+
+        static AndroidJavaClass _pluginClass;
+        static AndroidJavaClass PluginClass {
+            get {
+                if (_pluginClass == null)
+                {
+                    _pluginClass = new AndroidJavaClass("com.teenageengineering.midijackplugin.PluginEntry");
+                    _pluginClass.CallStatic("MidiJackStart");
+                }
+
+                return _pluginClass;
+            }
+        }
+
+        public static int CountSources()
+        {
+            return PluginClass.CallStatic<int>("MidiJackCountSources");
+        }
+
+        public static int CountDestinations()
+        {
+            return PluginClass.CallStatic<int>("MidiJackCountDestinations");
+        }
+
+        public static uint GetSourceIdAtIndex(int index)
+        {
+            return (uint)PluginClass.CallStatic<int>("MidiJackGetSourceIdAtIndex", index);
+        }  
+
+        public static uint GetDestinationIdAtIndex(int index)
+        {
+            return (uint)PluginClass.CallStatic<int>("MidiJackGetDestinationIdAtIndex", index);
+        }
+
+        public static string GetSourceName(uint id)
+        {
+            return PluginClass.CallStatic<string>("MidiJackGetSourceName", (int)id);
+        }
+
+        public static string GetDestinationName(uint id)
+        {
+            return PluginClass.CallStatic<string>("MidiJackGetDestinationName", (int)id);
+        }
+
+        public static ulong DequeueIncomingData()
+        {
+            return (ulong)PluginClass.CallStatic<long>("MidiJackDequeueIncomingData");
+        }
+
+        public static void SendMessage(ulong msg)
+        {
+            PluginClass.CallStatic("MidiJackSendMessage", (long)msg);
+        }
+
+        #else
+
+        #if (!UNITY_IOS && !UNITY_TVOS)
+                const string _libName = "MidiJackPlugin";
+        #else
+                const string _libName = "__Internal";
+        #endif
+
+        [DllImport(_libName, EntryPoint="MidiJackCountSources")]
+        public static extern int CountSources();
+
+        [DllImport(_libName, EntryPoint="MidiJackCountDestinations")]
+        public static extern int CountDestinations();
+
+        [DllImport(_libName, EntryPoint="MidiJackGetSourceIDAtIndex")]
+        public static extern uint GetSourceIdAtIndex(int index);
+
+        [DllImport(_libName, EntryPoint="MidiJackGetDestinationIDAtIndex")]
+        public static extern uint GetDestinationIdAtIndex(int index);
+
+        [DllImport(_libName)]
+        public static extern System.IntPtr MidiJackGetSourceName(uint id);
+
+        public static string GetSourceName(uint id) {
+        return Marshal.PtrToStringAnsi(MidiJackGetSourceName(id));
+        }
+
+        [DllImport(_libName)]
+        public static extern System.IntPtr MidiJackGetDestinationName(uint id);
+
+        public static string GetDestinationName(uint id) {
+        return Marshal.PtrToStringAnsi(MidiJackGetDestinationName(id));
+        }
+
+        [DllImport(_libName, EntryPoint="MidiJackDequeueIncomingData")]
         public static extern ulong DequeueIncomingData();
 
-        [DllImport("MidiJackPlugin", EntryPoint="MidiJackSendData")]
-        public static extern uint SendData(uint dist, uint data);
+        [DllImport(_libName, EntryPoint="MidiJackSendMessage")]
+        public static extern void SendMessage(ulong msg);
 
-        [DllImport("MidiJackPlugin", EntryPoint="MidiJackDequeueSendData")]
-        public static extern uint DequeueSendData();
+        #endif
 
         #endregion
 
@@ -373,14 +257,26 @@ namespace MidiJack
 
         public static MidiDriver Instance {
             get {
-                if (_instance == null) {
+                if (_instance == null)
                     _instance = new MidiDriver();
-                    if (Application.isPlaying)
-                        MidiStateUpdater.CreateGameObject(
-                            new MidiStateUpdater.Callback(_instance.Update));
-                }
+                
                 return _instance;
             }
+        }
+
+        public static void Refresh()
+        {
+            Instance.UpdateIfNeeded();
+        }
+
+        public static void AddSource(MidiSource source)
+        {
+            Instance._sourceMap[source.endpointId] = source;
+        }
+
+        public static void RemoveSource(uint endpointId)
+        {
+            Instance._sourceMap.Remove(endpointId);
         }
 
         #endregion

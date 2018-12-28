@@ -12,21 +12,27 @@ xcshareddata
 # Visual Studio
 Debug/
 Release/
-x64/
-x86/
+VisualStudio/*/x64/
+VisualStudio/*/x86/
 build/
 ipch/
 *.sdf
 .vs
+
+# Android Studio
+*.iml
+.gradle
+*/local.properties
+*/.idea/caches/build_file_checksums.ser
+*/.idea/libraries
+*/.idea/modules.xml
+*/.idea/workspace.xml
+captures/
+.externalNativeBuild
 
 # Misc
 *.swp
 *.lnk
 .DS_Store
 Thumbs.db
-.vscode/launch.json
-.vscode/settings.json
-Assembly-CSharp-Editor.csproj
-Assembly-CSharp.csproj
-MidiJack.sln
-VisualStudio/MidiJackPlugin.VC.opendb
+
